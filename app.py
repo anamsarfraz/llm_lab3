@@ -15,7 +15,7 @@ load_dotenv()
 
 from langfuse.decorators import observe
 from langfuse.openai import AsyncOpenAI
- 
+
 client = AsyncOpenAI()
 
 gen_kwargs = {
@@ -25,43 +25,17 @@ gen_kwargs = {
 }
 
 SYSTEM_PROMPT = """\
-You are a helpful assistant that can sometimes answer with a list of movies and ticket purchases.
+You are a helpful movie chatbot that helps people explore movies that are out in \
+theaters. If a user asks for recent information, output a function call and \
+the system add to the context. If you need to call a function, only output the \
+function call. Call functions using Python syntax in plain text, no code blocks.
 
-If you encounter errors, report the issue to the user.
+You have access to the following functions:
 
-If you need a list of movies, generate a function call in JSON format, as shown below. If you are generating a json response for a function call, do not include any other text.
-
-{
-    "function_name": "get_now_playing_movies",
-    "rationale": "Explain why you are calling the function"
-}
-
-If you need to get showtimes for a movie, generate a function call in JSON format, as shown below. 
-{
-    "function_name": "get_showtimes",
-    "rationale": "Explain why you are calling the function",
-    "title": "title of the movie",
-    "location": "location of the movie"
-}
-
-If you need to purchase a ticket, generate a function call in JSON format, as shown below. 
-{
-    "function_name": "buy_ticket",
-    "rationale": "Explain why you are calling the function",
-    "theater": "theater name",
-    "movie": "title of the movie",
-    "showtime": "showtime of the movie"
-}
-
-If you need to confirm a ticket purchase, generate a function call in JSON format, as shown below.
-{
-    "function_name": "confirm_ticket_purchase",
-    "rationale": "Explain why you are calling the function",
-    "theater": "theater name",
-    "movie": "title of the movie",
-    "showtime": "showtime of the movie"
-}
-
+get_now_playing_movies()
+get_showtimes(title, location)
+buy_ticket(theater, movie, showtime)
+confirm_ticket_purchase(theater, movie, showtime)
 """
 
 REVIEW_PROMPT = """\
@@ -82,7 +56,7 @@ rationale. Do not output as a code block.
 
 @observe
 @cl.on_chat_start
-def on_chat_start():    
+def on_chat_start():
     message_history = [{"role": "system", "content": SYSTEM_PROMPT}]
     cl.user_session.set("message_history", message_history)
 
@@ -95,7 +69,7 @@ async def generate_response(client, message_history, gen_kwargs):
     async for part in stream:
         if token := part.choices[0].delta.content or "":
             await response_message.stream_token(token)
-    
+
     await response_message.update()
 
     return response_message
@@ -107,11 +81,11 @@ async def check_for_review_call(client, message_history, gen_kwargs):
         messages=[{"role": "system", "content": REVIEW_PROMPT}]+message_history[1:],
         **gen_kwargs
     )
-    
-    response_content = response.choices[0].message.content
-    print("Response text for review call: ", response_content)
+
+    context_response = response.choices[0].message.content
+    print("Response text for review call: ", context_response)
     try:
-        context_json = json.loads(response_content)
+        context_json = json.loads(context_response)
         if context_json.get("fetch_reviews", False):
             movie_id = context_json.get("id")
             reviews = get_reviews(movie_id)
@@ -119,83 +93,88 @@ async def check_for_review_call(client, message_history, gen_kwargs):
             context_message = {"role": "system", "content": f"CONTEXT: {reviews}"}
             message_history.append(context_message)
     except json.JSONDecodeError:
-        print(f"Error parsing review call: {response_content}")
+        print(f"Error parsing review call: {context_response}")
 
 @cl.on_message
 @observe
 async def on_message(message: cl.Message):
     message_history = cl.user_session.get("message_history", [])
     message_history.append({"role": "user", "content": message.content})
-    
+
     # Check for review call first
     await check_for_review_call(client, message_history, gen_kwargs)
+
     response_message = await generate_response(client, message_history, gen_kwargs)
 
-    response_message_content = response_message.content.strip()
-    print(f"response_message_chat: {response_message_content[:300]}...")
-    while response_message_content.startswith('{'):
-        try:
-            function_call = json.loads(response_message_content)
-            if "function_name" in function_call and "rationale" in function_call:
-                function_name = function_call.get("function_name")
-                rationale = function_call.get("rationale")
-                if function_name == "get_now_playing_movies":
-                    movies = get_now_playing_movies()
-                    message_history.append({"role": "system", "content": f"Function call rationale: {rationale}\n\nMovies: {movies}"})
-                    # Generate a response to the user
-                    response_message = await generate_response(client, message_history, gen_kwargs)
-                    response_message_content = response_message.content.strip()
-                    print(f"response_message_chat: {response_message_content[:300]}...")
-                elif function_name == "get_showtimes":
-                    title = function_call.get("title")
-                    location = function_call.get("location")
-                    showtimes = get_showtimes(title, location)
-                    message_history.append({"role": "system", "content": f"Function call rationale: {rationale}\n\nShowtimes: {showtimes}"})
-                    # Generate a response to the user
-                    response_message = await generate_response(client, message_history, gen_kwargs)
-                    response_message_content = response_message.content.strip()
-                    print(f"response_message_chat: {response_message_content[:300]}...")
-                elif function_name == "buy_ticket":
-                    print("Ticket purchase in queue: ", message_history)
-                    theater = function_call.get("theater")
-                    movie = function_call.get("movie")
-                    showtime = function_call.get("showtime")
-                    ticket_purchase = buy_ticket(theater, movie, showtime)
-                    message_history.append({"role": "system", "content": f"Function call rationale: {rationale}\n\nTicket purchase in queue: {ticket_purchase} Please conirm if you want to purchase the ticket."})
-                    # Generate a response to the user
-                    response_message = await generate_response(client, message_history, gen_kwargs)
-                    response_message_content = response_message.content.strip()
-                    print(f"response_message_chat: {response_message_content[:300]}...")
-                elif function_name == "confirm_ticket_purchase":
-                    print("Confirm ticket purchase: ", message_history)
-                    theater = function_call.get("theater")
-                    movie = function_call.get("movie")
-                    showtime = function_call.get("showtime")
-                    ticket_purchase = confirm_ticket_purchase(theater, movie, showtime)
-                    message_history.append({"role": "system", "content": f"Function call rationale: {rationale}\n\nTicket purchase confirmed: {ticket_purchase}"})
-                    # Generate a response to the user
-                    response_message = await generate_response(client, message_history, gen_kwargs)
-                    response_message_content = response_message.content.strip()
-                    print(f"response_message_chat: {response_message_content[:300]}...")
-                else:
-                    error_message = f"Function {function_name} not found"
-                    message_history.append({"role": "system", "content": error_message})
-                    # Generate a response to the user
-                    response_message = await cl.Message(content=error_message).send()
-            else:
-                error_message = "Invalid function call format"
-                message_history.append({"role": "system", "content": error_message})
-                # Generate a response to the user
-                response_message = await cl.Message(content=error_message).send()
-        except json.JSONDecodeError as e:
-            error_message = f"Invalid JSON format: {response_message.content}"
-            print(f"error_message: {error_message} Traceback: {traceback.format_exc()}")
-            message_history.append({"role": "system", "content": error_message})
-            # Generate a response to the user
-            response_message = await cl.Message(content=error_message).send()
-            
-    message_history.append({"role": "assistant", "content": response_message.content})
+    response_message_content = response_message.content
+    message_history.append({"role": "assistant", "content": response_message_content})
     cl.user_session.set("message_history", message_history)
+
+    while True:
+        if "get_now_playing_movies()" in response_message_content:
+            now_playing_movies = get_now_playing_movies()
+            message_history.append({"role": "system", "content": now_playing_movies})
+        elif "get_showtimes(" in response_message_content:
+            try:
+                start_index = response_message_content.find("get_showtimes(") + len("get_showtimes(")
+                end_index = response_message_content.find(")", start_index)
+                args = response_message_content[start_index:end_index].split(",")
+                print(f"Received args for get_showtimes: {args}")
+                title = args[0].strip().strip("\"")
+                location = args[1].strip().strip("\"")
+                print(f"Extracted title: {title}, location: {location}")
+                showtimes = get_showtimes(title, location)
+            except Exception as e:
+                error = f"Error processing get_showtimes: {str(e)}"
+                print(error)
+                showtimes = error
+
+            message_history.append({"role": "system", "content": showtimes})
+
+        elif "buy_ticket(" in response_message_content:
+            try:
+                start_index = response_message_content.find("buy_ticket(") + len("buy_ticket(")
+                end_index = response_message_content.find(")", start_index)
+                args = response_message_content[start_index:end_index].split(",")
+                print("Received args for buy_ticket: ", args)
+                theater = args[0].strip().strip("\"")
+                movie = args[1].strip().strip("\"")
+                showtime = args[2].strip().strip("\"")
+                print(f"Extracted theater: {theater}, movie: {movie}, showtime: {showtime}")
+
+                purchase_ticket = buy_ticket(theater, movie, showtime)
+            except Exception as e:
+                error = f"Error processing buy_ticket: {str(e)}"
+                print(error)
+                purchase_ticket = error
+
+            message_history.append({"role": "system", "content": purchase_ticket})
+        elif "confirm_ticket_purchase(" in response_message_content:
+            try:
+                start_index = response_message_content.find("confirm_ticket_purchase(") + len("confirm_ticket_purchase(")
+                end_index = response_message_content.find(")", start_index)
+                args = response_message_content[start_index:end_index].split(",")
+                print("Received args for confirm_ticket_purchase: ", args)
+                theater = args[0].strip().strip("\"")
+                movie = args[1].strip().strip("\"")
+                showtime = args[2].strip().strip("\"")
+                print(f"Extracted theater: {theater}, movie: {movie}, showtime: {showtime}")
+                confirm_purchase = confirm_ticket_purchase(theater, movie, showtime)
+            except Exception as e:
+                error = f"Error processing confirm_ticket_purchase: {str(e)}"
+                print(error)
+                confirm_purchase = error
+
+            message_history.append({"role": "system", "content": confirm_purchase})
+        else:
+            break
+
+        # Generate a response to the user with the added system messages
+        response_message = await generate_response(client, message_history, gen_kwargs)
+        response_message_content = response_message.content
+
+        message_history.append({"role": "assistant", "content": response_message.content})
+        cl.user_session.set("message_history", message_history)
 
 if __name__ == "__main__":
     cl.main()

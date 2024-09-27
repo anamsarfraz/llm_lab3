@@ -6,6 +6,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+
 def get_now_playing_movies():
     url = "https://api.themoviedb.org/3/movie/now_playing?language=en-US&page=1"
     headers = {
@@ -78,7 +79,7 @@ def get_showtimes(title, location):
     return formatted_showtimes
 
 def buy_ticket(theater, movie, showtime):
-    return f"Ticket in queue for {movie} at {theater} for {showtime}."
+    return f"Ask the user to confirm their ticket purchase for {movie} at {theater} at {showtime}."
 
 def confirm_ticket_purchase(theater, movie, showtime):
     return f"Ticket purchase confirmed for {movie} at {theater} for {showtime}."
