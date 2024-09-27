@@ -155,12 +155,29 @@ def on_chat_start():
 
 @observe
 async def handle_tool_calls(client, message_history, gen_kwargs):
-    response = await client.chat.completions.create(
-        messages=message_history,
-        tools=tools,
-        **gen_kwargs
-    )
-    return response
+    response_message = cl.Message(content="")
+    function_data = {"name": [], "arguments": []}
+
+    # Commenting out the send() call to handle sending empty 
+    #await response_message.send()
+
+    stream = await client.chat.completions.create(messages=message_history, tools=tools, stream=True, **gen_kwargs)
+    async for part in stream:
+        if part.choices[0].delta.tool_calls:
+            tool_call = part.choices[0].delta.tool_calls[0]
+            function_name = tool_call.function.name or ""
+            arguments = tool_call.function.arguments or ""
+            function_data["name"].append(function_name)
+            function_data["arguments"].append(arguments)
+        
+        if token := part.choices[0].delta.content or "":
+            await response_message.stream_token(token)
+    
+    await response_message.update()
+
+    function_data["name"] = ''.join(function_data["name"])
+    function_data["arguments"] = ''.join(function_data["arguments"])
+    return response_message, function_data
 
 
 @observe
@@ -210,22 +227,16 @@ async def on_message(message: cl.Message):
     # Check for review call first
     await check_for_review_call(client, message_history, gen_kwargs)
     
-    response = await handle_tool_calls(client, message_history, gen_kwargs)
-    print("Response: ", response)
-    print("Response text: ", response.choices[0].message.content)
-    if response.choices[0].message.content:
-        message_history.append({"role": "assistant", "content": response.choices[0].message.content})
+    response_message, function_data = await handle_tool_calls(client, message_history, gen_kwargs)
+    print("Function data: ", function_data)
+    print("Response text: ", response_message.content)
+    if response_message.content:
+        message_history.append({"role": "assistant", "content": response_message.content})
         cl.user_session.set("message_history", message_history)
-        # Temporary
-        await cl.Message(content=response.choices[0].message.content).send()
 
-    while response.choices[0].finish_reason == "tool_calls":
-        tool_call = response.choices[0].message.tool_calls[0]
-        print("Tool call: ", tool_call)
-        function_type = tool_call.type
-        
-        function_name = tool_call.function.name
-        if arguments := tool_call.function.arguments:
+    while function_data["name"]:
+        function_name = function_data["name"]
+        if arguments := function_data["arguments"]:
             arguments = json.loads(arguments)
         print("Function name: ", function_name)
         print("Arguments: ", arguments)
@@ -248,14 +259,12 @@ async def on_message(message: cl.Message):
         else:
             break
         # Generate a response to the user with the added system messages 
-        response = await handle_tool_calls(client, message_history, gen_kwargs)
-        print("Response in loop: ", response)
-        print("Response text in loop: ", response.choices[0].message.content)
-        if response.choices[0].message.content:
-            message_history.append({"role": "assistant", "content": response.choices[0].message.content})
+        response_message, function_data = await handle_tool_calls(client, message_history, gen_kwargs)
+        print("Function data in loop: ", function_data)
+        print("Response text in loop: ", response_message.content)
+        if response_message.content:
+            message_history.append({"role": "assistant", "content": response_message.content})
             cl.user_session.set("message_history", message_history)
-            # Temporary
-            await cl.Message(content=response.choices[0].message.content).send()
 
 
 if __name__ == "__main__":
